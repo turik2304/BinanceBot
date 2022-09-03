@@ -1,11 +1,14 @@
 package domain
 
+import Cache
 import data.Repository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import presentation.items.AssetItem
 import java.io.File
+import java.math.BigDecimal
+import java.math.MathContext
 import java.math.RoundingMode
 import java.text.SimpleDateFormat
 import java.util.*
@@ -16,7 +19,9 @@ class TripleCalculator(private val repository: Repository) {
 
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob())
 
-    private val sdf = SimpleDateFormat("dd/M/yyyy hh:mm:ss")
+    private val sdf: SimpleDateFormat = SimpleDateFormat("dd/M/yyyy hh:mm:ss")
+
+    private val trader: Trader = Trader()
 
     private fun writeToFile(result: String) {
         val currentDate = sdf.format(Date())
@@ -32,50 +37,76 @@ class TripleCalculator(private val repository: Repository) {
         paySymbol: String,
         profitPercent: Double,
     ) {
+        val payAmountDecimal = payAmount.toBigDecimal()
+        Cache.amount = payAmountDecimal
+        val profitPercentDecimal = profitPercent.toBigDecimal()
         var tripleResults = calculateTriple(paySymbol)
         scope.launch {
             priceRefresher.priceFlow.collect { priceEvents ->
                 tripleResults = updatePrices(tripleResults, priceEvents)
                 val tradeResult = calculate(
-                    payAmount = payAmount,
-                    profitPercent = profitPercent,
+                    payAmount = Cache.amount,
+                    profitPercent = profitPercentDecimal,
                     triples = tripleResults
-                ).sortedByDescending { it.profit }.take(3)
-//                tradeResult.firstOrNull()?.let {
-//                    if (it.profit > cache) {
-//                        cache = it.profit
-//                        writeToFile(it.toString())
-//                    }
-//                }
-                repeat(10) { println() }
+                ).sortedByDescending { it.profit }.take(1)
                 tradeResult.forEach {
+                    val isTradeStarted = trader.tradeTriple(
+                        paySymbol = it.paySymbol,
+                        buyOrder = it.buyOrder,
+                        middleOrder = it.middleOrder,
+                        sellOrder = it.sellOrder,
+                    )
+                    println(it.ordersInfo())
                     println(it)
+                    println("IS_STARTED = $isTradeStarted")
+                    println()
                 }
             }
         }
     }
 
     private fun updatePrices(triples: List<TripleResult>, priceEvents: List<PriceRefresher.PriceEvent>): List<TripleResult> {
-        val priceMap = priceEvents.associate { it.asset to it.price }.let {
-            val hashMap = hashMapOf<String, Double>()
+        val priceMap = priceEvents.associateBy { it.asset }.let {
+            val hashMap = hashMapOf<String, PriceRefresher.PriceEvent>()
             hashMap.putAll(it)
             hashMap
         }
         return triples.map { triple ->
             val newBuyAsset = if (priceMap.contains(triple.buyAsset.asset)) {
-                triple.buyAsset.copy(price = priceMap[triple.buyAsset.asset]!!)
+                val priceInfo = priceMap[triple.buyAsset.asset]!!
+                triple.buyAsset.copy(
+                    price = priceInfo.price,
+                    bidPrice = priceInfo.bidPrice,
+                    bidQuantity = priceInfo.bidQuantity,
+                    askPrice = priceInfo.askPrice,
+                    askQuantity = priceInfo.askQuantity
+                )
             } else {
                 triple.buyAsset
             }
             val newMiddleResults = triple.middleResult.map { middle ->
                 val newMiddleAsset = if (priceMap.contains(middle.middleAsset.asset)) {
-                    middle.middleAsset.copy(price = priceMap[middle.middleAsset.asset]!!)
+                    val priceInfo = priceMap[middle.middleAsset.asset]!!
+                    middle.middleAsset.copy(
+                        price = priceInfo.price,
+                        bidPrice = priceInfo.bidPrice,
+                        bidQuantity = priceInfo.bidQuantity,
+                        askPrice = priceInfo.askPrice,
+                        askQuantity = priceInfo.askQuantity
+                    )
                 } else {
                     middle.middleAsset
                 }
                 val newSellAssets = middle.sellAssets.map { sell ->
                     if (priceMap.contains(sell.asset)) {
-                        sell.copy(price = priceMap[sell.asset]!!)
+                        val priceInfo = priceMap[sell.asset]!!
+                        sell.copy(
+                            price = priceInfo.price,
+                            bidPrice = priceInfo.bidPrice,
+                            bidQuantity = priceInfo.bidQuantity,
+                            askPrice = priceInfo.askPrice,
+                            askQuantity = priceInfo.askQuantity
+                        )
                     } else {
                         sell
                     }
@@ -93,8 +124,8 @@ class TripleCalculator(private val repository: Repository) {
     }
 
     private fun calculate(
-        payAmount: Double,
-        profitPercent: Double,
+        payAmount: BigDecimal,
+        profitPercent: BigDecimal,
         triples: List<TripleResult>
     ): List<FinalTradeResult> {
         val tripleInfo = mutableListOf<FinalTradeResult>()
@@ -116,7 +147,8 @@ class TripleCalculator(private val repository: Repository) {
                         paySymbol = middleTradeResult.purchasedSymbol,
                         asset = sellAsset
                     )
-                    val percent = ((finalResult.purchasedAmount - buyTradeResult.soldAmount) / buyTradeResult.soldAmount) * 100
+                    val percent =
+                        ((finalResult.purchasedAmount - buyTradeResult.soldAmount).precDiv(buyTradeResult.soldAmount)) * DECIMAL_100
                     if (percent > profitPercent) {
                         val result = FinalTradeResult(
                             paySymbol = buyTradeResult.soldSymbol,
@@ -126,16 +158,19 @@ class TripleCalculator(private val repository: Repository) {
                             buySymbol = buyTradeResult.purchasedSymbol,
                             buyAmount = buyTradeResult.purchasedAmount,
                             buyPrice = buyResult.buyAsset.price,
+                            buyOrder = buyTradeResult.order,
 
                             middleAsset = middleResult.middleAsset.asset,
                             middleSymbol = middleTradeResult.purchasedSymbol,
                             middleAmount = middleTradeResult.purchasedAmount,
                             middlePrice = middleResult.middleAsset.price,
+                            middleOrder = middleTradeResult.order,
 
                             sellAsset = sellAsset.asset,
                             sellSymbol = finalResult.purchasedSymbol,
                             sellAmount = finalResult.purchasedAmount,
                             sellPrice = sellAsset.price,
+                            sellOrder = finalResult.order
                         )
                         tripleInfo.add(result)
                     }
@@ -150,23 +185,8 @@ class TripleCalculator(private val repository: Repository) {
      */
     private fun calculateTriple(quoteSymbol: String): List<TripleResult> {
         val allAssets = repository.getAssetItems()
-        //inital
-        //BTCUSDT
-        //ADABUSD
-
-        //BTCUSDT
-        //ETHUSDT
-        //ADAUSDT
         val buyAssets = allAssets.filter { it.quoteSymbol == quoteSymbol }
-        //BTCAUD
-        //XMRETH
-        //ADABTC
-        //BUSDBTC
         val middleAssets = allAssets.filter { it.baseSymbol != quoteSymbol && it.quoteSymbol != quoteSymbol }
-        //USDTBUSD
-        //BNBUSDT
-        //BTCUSDT
-        //USDTADA
         val sellAssets = allAssets.filter { it.baseSymbol == quoteSymbol || it.quoteSymbol == quoteSymbol }
 
         return buyAssets.mapNotNull { buyAsset ->
@@ -212,54 +232,75 @@ class TripleCalculator(private val repository: Repository) {
         }
     }
 
+    private val zeroFeeAssets: List<String> = listOf(
+        "BTCAUD",
+        "BTCBIDR",
+        "BTCBRL",
+        "BTCBUSD",
+        "BTCEUR",
+        "BTCGBP",
+        "BTCRUB",
+        "BTCTRY",
+        "BTCTUSD",
+        "BTCUAH",
+        "BTCUSDC",
+        "BTCUSDP",
+        "BTCUSDT",
+        "ETHBUSD"
+    )
+
     //42_0000, USDT, BTCUSDT 21_000
     //2, BTC, BTCUSDT 21_000
-    private fun trade(payAmount: Double, paySymbol: String, asset: AssetItem): TradeResult {
+    private fun trade(payAmount: BigDecimal, paySymbol: String, asset: AssetItem): TradeResult {
+        val feeFactor = if (asset.asset in zeroFeeAssets) BigDecimal.ONE else FEE_FACTOR
         return when (paySymbol) {
-            //buy
+            //buy -> sell quote, buy base -> realPurchasedAmount and BUY side to request
             asset.quoteSymbol -> {
                 //8.3536645351697
-                val purchasedAmount = payAmount / asset.price
+                val purchasedAmount = payAmount.precDiv(asset.askPrice)
                 //8.35
                 val realPurchasedAmount = purchasedAmount.roundByStepSize(asset.stepSize)
                 //8.35 minus Fee
-                val realPurchasedAmountWithFee = realPurchasedAmount * FEE_FACTOR
-                val realPayAmount = realPurchasedAmount * asset.price
+                val realPurchasedAmountWithFee = realPurchasedAmount * feeFactor
+                val realPayAmount = realPurchasedAmount * asset.askPrice
                 TradeResult(
                     soldSymbol = paySymbol,
                     soldAmount = realPayAmount,
                     purchasedSymbol = asset.baseSymbol,
                     purchasedAmount = realPurchasedAmountWithFee,
+                    order = Trader.Order(
+                        asset = asset.asset,
+                        quantity = realPurchasedAmount,
+                        side = "BUY",
+                        paySymbol = paySymbol,
+                        payAmount = realPayAmount,
+                        tradingSymbolForLogs = asset.baseSymbol
+                    )
                 )
             }
-            //sell
+            //sell -> sell base, buy quote -> realPayAmount and SELL side to request
             asset.baseSymbol -> {
                 val realPayAmount = payAmount.roundByStepSize(asset.stepSize)
-                val realPurchasedAmount = realPayAmount * asset.price * FEE_FACTOR
+                val realPurchasedAmount = realPayAmount * asset.bidPrice * feeFactor
                 TradeResult(
                     soldSymbol = paySymbol,
                     soldAmount = realPayAmount,
                     purchasedSymbol = asset.quoteSymbol,
-                    purchasedAmount = realPurchasedAmount
+                    purchasedAmount = realPurchasedAmount,
+                    order = Trader.Order(
+                        asset = asset.asset,
+                        quantity = realPayAmount,
+                        side = "SELL",
+                        paySymbol = paySymbol,
+                        payAmount = realPayAmount,
+                        tradingSymbolForLogs = asset.baseSymbol
+                    )
                 )
             }
             else -> throw Exception("Symbol don't match!, payAmount = $payAmount, paySymbol = $paySymbol, symbol = $asset")
         }
     }
 
-    private fun Double.roundByStepSize(stepSize: Double): Double {
-        return this.toBigDecimal().setScale(stepSize.getScale(), RoundingMode.DOWN).toDouble()
-    }
-
-    private fun Double.getScale(): Int {
-        var double = this
-        var scale = 0
-        while (double < 1.0) {
-            double *= 10
-            scale++
-        }
-        return scale
-    }
 
     data class MiddleResult(
         val middleAsset: AssetItem,
@@ -273,32 +314,40 @@ class TripleCalculator(private val repository: Repository) {
 
     data class TradeResult(
         val soldSymbol: String,
-        val soldAmount: Double,
+        val soldAmount: BigDecimal,
         val purchasedSymbol: String,
-        val purchasedAmount: Double,
+        val purchasedAmount: BigDecimal,
+        val order: Trader.Order
     )
 
     data class FinalTradeResult(
         val paySymbol: String,
-        val payAmount: Double,
+        val payAmount: BigDecimal,
 
         val buyAsset: String,
         val buySymbol: String,
-        val buyAmount: Double,
-        val buyPrice: Double,
+        val buyAmount: BigDecimal,
+        val buyPrice: BigDecimal,
+        val buyOrder: Trader.Order,
 
         val middleAsset: String,
         val middleSymbol: String,
-        val middleAmount: Double,
-        val middlePrice: Double,
+        val middleAmount: BigDecimal,
+        val middlePrice: BigDecimal,
+        val middleOrder: Trader.Order,
 
         val sellAsset: String,
         val sellSymbol: String,
-        val sellAmount: Double,
-        val sellPrice: Double,
+        val sellAmount: BigDecimal,
+        val sellPrice: BigDecimal,
+        val sellOrder: Trader.Order
     ) {
-        val profit: Double = sellAmount - payAmount
-        private val profitPercent: Double = (profit / payAmount) * 100.0
+        val profit: BigDecimal = sellAmount - payAmount
+        private val profitPercent: BigDecimal = profit.precDiv(payAmount) * DECIMAL_100
+
+        fun ordersInfo(): String {
+            return "${buyOrder.asset}, ${buyOrder.side} ${buyOrder.quantity} ${buyOrder.tradingSymbolForLogs} ___ ${middleOrder.asset}, ${middleOrder.side} ${middleOrder.quantity} ${middleOrder.tradingSymbolForLogs} ___ ${sellOrder.asset}, ${sellOrder.side} ${sellOrder.quantity} ${sellOrder.tradingSymbolForLogs} ___ Profit $profit $sellSymbol, $profitPercent %."
+        }
 
         override fun toString(): String {
             //100 USDT -> BTCUSDT 21432.43 -> 0.2242 BTC -> BTCADA 6435.42 -> 433.42 ADA -> ADAUSDT 42.13 -> 103 USDT. Profit: 3 USDT, 3%.
@@ -306,8 +355,24 @@ class TripleCalculator(private val repository: Repository) {
         }
     }
 
-    companion object {
-        private const val FEE_FACTOR = 0.999
-    }
-
 }
+
+fun BigDecimal.roundByStepSize(stepSize: BigDecimal): BigDecimal {
+    return this.setScale(stepSize.getScale(), RoundingMode.DOWN)
+}
+
+private fun BigDecimal.getScale(): Int {
+    var decimal = this
+    var scale = 0
+    while (decimal < BigDecimal.ONE) {
+        decimal *= BigDecimal.TEN
+        scale++
+    }
+    return scale
+}
+
+private val FEE_FACTOR = 0.999.toBigDecimal()
+val DECIMAL_100 = BigDecimal("100.0")
+
+private val mathContext = MathContext(12, RoundingMode.FLOOR)
+fun BigDecimal.precDiv(other: BigDecimal): BigDecimal = this.divide(other, mathContext)

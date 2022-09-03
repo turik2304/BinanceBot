@@ -1,6 +1,7 @@
 package data.network.response
 
 import com.google.gson.annotations.SerializedName
+import java.math.BigDecimal
 
 data class ExchangeInfoResponse(
     @SerializedName("symbols")
@@ -9,28 +10,30 @@ data class ExchangeInfoResponse(
 
 data class SymbolResponse(
     @SerializedName("symbol")
-    val symbol: String,
+    val asset: String,
     @SerializedName("baseAsset")
-    val baseAsset: String,
+    val baseSymbol: String,
     @SerializedName("quoteAsset")
-    val quoteAsset: String,
+    val quoteSymbol: String,
     @SerializedName("status")
     val status: Status,
     @SerializedName("orderTypes")
     val orderTypes: List<OrderType>,
     @SerializedName("permissions")
     val permissions: List<Permission>,
+    @SerializedName("isSpotTradingAllowed")
+    val isSpotTradingAllowed: Boolean,
     @SerializedName("filters")
     private val filters: List<Filter>
 ) {
-    private val lotStepSize: Double
-        get() = filters.find { it.filterType == "LOT_SIZE" }?.stepSize ?: 0.0
+    private val lotStepSize: BigDecimal
+        get() = filters.find { it.filterType == "LOT_SIZE" }?.stepSize ?: BigDecimal.ZERO
 
-    private val marketLotStepSize: Double
-        get() = filters.find { it.filterType == "MARKET_LOT_SIZE" }?.stepSize ?: 0.0
+    private val marketLotStepSize: BigDecimal
+        get() = filters.find { it.filterType == "MARKET_LOT_SIZE" }?.stepSize ?: BigDecimal.ZERO
 
-    val stepSize: Double
-        get() = if (lotStepSize == 0.0) marketLotStepSize else lotStepSize
+    val stepSize: BigDecimal
+        get() = if (lotStepSize == BigDecimal.ZERO) marketLotStepSize else lotStepSize
 }
 
 enum class Status {
@@ -76,5 +79,5 @@ data class Filter(
     @SerializedName("filterType")
     val filterType: String,
     @SerializedName("stepSize")
-    val stepSize: Double?
+    val stepSize: BigDecimal?
 )

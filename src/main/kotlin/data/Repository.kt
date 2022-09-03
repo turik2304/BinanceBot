@@ -8,17 +8,26 @@ class Repository(private val api: Api) {
     fun getAssetItems(): List<AssetItem> {
         val symbols = api.getExchangeInfo()
         val prices = api.getPrices()
-        return symbols.mapNotNull { symbolResponse ->
-            prices.find { it.symbol == symbolResponse.symbol }?.price?.let { price ->
-                AssetItem(
-                    asset = symbolResponse.symbol,
-                    baseSymbol = symbolResponse.baseAsset,
-                    quoteSymbol = symbolResponse.quoteAsset,
-                    price = price,
-                    stepSize = symbolResponse.stepSize
-                )
+        val book = api.getBidsAndAsks()
+        val items = symbols.mapNotNull { symbolResponse ->
+            prices.find { it.asset == symbolResponse.asset }?.price?.let { price ->
+                book.find { it.asset == symbolResponse.asset }?.let { book ->
+                    AssetItem(
+                        asset = symbolResponse.asset,
+                        baseSymbol = symbolResponse.baseSymbol,
+                        quoteSymbol = symbolResponse.quoteSymbol,
+                        stepSize = symbolResponse.stepSize,
+                        price = price,
+                        bidPrice = book.bidPrice,
+                        bidQuantity = book.bidQuantity,
+                        askPrice = book.askPrice,
+                        askQuantity = book.askQuantity
+                    )
+                }
             }
         }
+        println("getAssetItems()")
+        return items
     }
 
 }

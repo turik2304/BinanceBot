@@ -1,5 +1,7 @@
 package presentation.items
 
+import java.math.BigDecimal
+
 /**
  * Example:
  *
@@ -17,6 +19,10 @@ data class AssetItem(
     val asset: String,
     val baseSymbol: String,
     val quoteSymbol: String,
-    val price: Double,
-    val stepSize: Double
+    val stepSize: BigDecimal,
+    val price: BigDecimal,
+    val bidPrice: BigDecimal,
+    val bidQuantity: BigDecimal,
+    val askPrice: BigDecimal,
+    val askQuantity: BigDecimal
 )

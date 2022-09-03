@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import java.math.BigDecimal
 
 class PriceRefresher {
 
@@ -34,7 +35,15 @@ class PriceRefresher {
         @SerializedName("s")
         val asset: String,
         @SerializedName("c")
-        val price: Double
+        val price: BigDecimal,
+        @SerializedName("b")
+        val bidPrice: BigDecimal,
+        @SerializedName("B")
+        val bidQuantity: BigDecimal,
+        @SerializedName("a")
+        val askPrice: BigDecimal,
+        @SerializedName("A")
+        val askQuantity: BigDecimal,
     )
 
 }
